@@ -26,9 +26,11 @@ os.getcwd()
 
 # ### 0-1) Declare Global variable
 
+epochs = 26
 max_len = 128 # maximum number of conversation in each script
 hidden_dim = 64 # number of hidden state
-device = 'cuda'
+device = 'cpu'
+batch_size = 6*2
 
 # ### 0-2) read annotation file
 
@@ -39,6 +41,8 @@ import glob, copy, gc
 from copy import deepcopy
 import torch
 from torch import nn
+import math
+from collections import Counter
 
 ### Session01 ~ Session32 : Train set
 ### Session33 ~ Session40 : Test set
@@ -57,7 +61,7 @@ id_list = [deepcopy(script_) for i in range(len(dir_list))]
 ## all annotation data: list -> torch.tensor
 frame = torch.zeros(40,6,max_len)
 gender_tensor = deepcopy(frame).to(device)
-emotion_tensor = deepcopy(frame).to(device)
+emotion_tensor = deepcopy(frame-1).to(device)
 valence_tensor = deepcopy(frame).to(device)
 arousal_tensor = deepcopy(frame).to(device)
 
@@ -96,9 +100,8 @@ gc.collect()
 # ### 1-1) Text input by KoBERT (worked in colab should be loaded.)
 
 # +
-import torch
-from torch import nn
-device = torch.device("cuda")
+
+# device = torch.device("cuda")
 print(torch.__version__)
 print(torch.cuda.is_available())
 print(torch.cuda.device(0))
@@ -108,6 +111,7 @@ if torch.cuda.is_available():
     device = torch.device('cuda')
 
 print(device)
+device="cpu"
 
 # +
 # kobert_output = torch.zeros([32,6,max_len,768]).to(device) # (train session, scripts, max_conversation_length, output_dim_of_KoBERT)
@@ -119,6 +123,10 @@ for i in range(1,32):
     kobert_output[i,:,:,:] = torch.tensor(np.load("G:/내 드라이브/2023aifactory/wav_text/temp_session"+str(i+1).zfill(2)+".npy"),
                                          dtype=torch.float32)[0,:,:,:]
 
+test_kobert_output = torch.zeros(8,kobert_output.shape[1],kobert_output.shape[2],kobert_output.shape[3])
+for i in range(32,40):
+    test_kobert_output[i-32,:,:,:] = torch.tensor(np.load("G:/내 드라이브/2023aifactory/wav_text/temp_session"+str(i+1).zfill(2)+".npy"),
+                                         dtype=torch.float32)[0,:,:,:]
 gc.collect()
 
 # for i in range(1,2): # call only 1 session temporalry
@@ -135,12 +143,6 @@ gc.collect()
 #             gc.collect()
 #     print()
 # -
-
-gc.collect()
-
-# np.save("G:/내 드라이브/2023aifactory/wav_text/temp_session01", kobert_output.cpu().detach().numpy() )
-# kobert_output = torch.tensor(np.load("G:/내 드라이브/2023aifactory/wav_text/temp_session01.npy"))
-
 
 # ### 1-2) Audio by MFCC
 
@@ -161,7 +163,7 @@ def get_librosa_mfcc(filepath, n_mfcc=hidden_dim):
     sig, sr = librosa.core.load(filepath, sr=sample_rate)
     mfccs = librosa.feature.mfcc(y=sig, sr=sr, hop_length=hop_length,
                                  n_mfcc=n_mfcc, n_fft=n_fft)
-    mfccs = torch.FloatTensor(mfccs).transpose(0,1)
+    mfccs = torch.FloatTensor(mfccs).contiguous().transpose(0,1)
     return mfccs
 
 # from sklearn.decomposition import PCA
@@ -171,37 +173,57 @@ def get_librosa_mfcc(filepath, n_mfcc=hidden_dim):
 # -
 
 scripts_ = [[] for i in range(6)]
-mfcc_output = [deepcopy(scripts_) for i in range(40)]
+mfcc_output = [deepcopy(scripts_) for i in range(32)]
+test_mfcc_output = [deepcopy(scripts_) for i in range(8)]
 
 # +
-import glob, copy
-from copy import deepcopy
-import os
-import glob
-import gc
-import pandas as pd
-import re
+import _pickle as cPickle
 
-# for i in range(40): # call all session with train(32) and test(8)
-# for i in range(1): # call only 1 session temporalry
-for i in range(17,32): # call only 32 session for training
-    print(f"session {i+1}")
+lst_ = ["temp_session_1_17_list","temp_session_18_list","temp_session_19_26_list","temp_session_27_32_list","temp_session_33_40_list"]
+# range_ = [[0,17],[18,26],[27,32]]
+# read only train set
+for i in range(5):
+    print(lst_[i])
+    with open(os.getcwd()+"/wav_audio/"+lst_[i], "rb") as fp:   # Unpickling
+        temp = cPickle.load(fp)
+        print(len(temp))
+        
+    if i==0: mfcc_output = deepcopy(temp)
+    elif i < 4: 
+        for j in range(len(temp)):
+            mfcc_output.append(deepcopy(temp[j]))
+    else:
+        test_mfcc_output = deepcopy(temp)
+    del temp; gc.collect()
+
+
+# +
+# import glob, copy
+# from copy import deepcopy
+# import os
+# import glob
+# import gc
+# import pandas as pd
+# import re
+
+# np.load("wav_audio/temp_session")
+# # for i in range(40): # call all session with train(32) and test(8)
+# # for i in range(1): # call only 1 session temporalry
+# for i in range(17,32): # call only 32 session for training
+#     print(f"session {i+1}")
     
-    for j in range(6):
-        print(f"script {j+1}", end=" ")
-        for k in range(len(id_list[i][j])): 
-            filepath =  os.getcwd() + "/wav/Session"+str(i+1).zfill(2)+"/"+id_list[i][j][k]+".wav"
-            temp = get_librosa_mfcc(filepath)
-            temp = preprocessing.scale(temp, axis=0).T
-            mfcc_output[i][j].append(temp)
-            del temp
+#     for j in range(6):
+#         print(f"script {j+1}", end=" ")
+#         for k in range(len(id_list[i][j])): 
+#             filepath =  os.getcwd() + "/wav/Session"+str(i+1).zfill(2)+"/"+id_list[i][j][k]+".wav"
+#             temp = get_librosa_mfcc(filepath)
+#             temp = preprocessing.scale(temp, axis=0).T
+#             mfcc_output[i][j].append(temp)
+#             del temp
     
-    gc.collect()
-    print()
+#     gc.collect()
+#     print()
 # -
-
-mfcc_output[17][1]
-
 
 # ### 1-3) set same output shape
 
@@ -234,52 +256,6 @@ class inputProcessing(nn.Module):
             x = torch.tensor(x,dtype=torch.float32)
         return self.reduceDim(x.to(device))
 
-
-
-# ### model로 전체 빌딩 되어야 하는 부분 ### 수정 필요
-
-# +
-
-input_p_text = inputProcessing().to(device)
-input_p_audio = inputProcessing(output_dim=1).to(device)
-
-## kobert -> pp_text
-pp_text = input_p_text(kobert_output.to(device))
-
-## mfcc -> pp_audio
-pp_audio = torch.zeros(32,6,max_len,hidden_dim)
-
-for i in range(17):
-    print(f"session {i+1}")
-    for j in range(6):
-        print(f"script {j+1}", end=" ")
-        for k in range(len(mfcc_output[i][j])):
-            temp = torch.tensor(mfcc_output[i][j][k], dtype=torch.float32)
-            pp_audio[i,j,k,:] = input_p_audio(temp).T
-            del temp
-    print()
-    torch.cuda.empty_cache()
-
-gc.collect()
-
-# pp_text
-
-# aggregate to 3-dimension all tensors
-
-pp_audio = pp_audio.contiguous().view(-1,max_len,output_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
-pp_text = pp_text.contiguous().view(-1,max_len,output_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
-tr_gender_tensor = gender_tensor[:32,:,:].contiguous().view(-1,max_len) # (192, 128) => (batch size, max_len) 
-tr_emotion_tensor = emotion_tensor[:32,:,:].contiguous().view(-1,max_len) # (192, 128) => (batch size, max_len) 
-tr_valence_tensor = valence_tensor[:32,:,:].contiguous().view(-1,max_len) # (192, 128) => (batch size, max_len) 
-tr_arousal_tensor = arousal_tensor[:32,:,:].contiguous().view(-1,max_len) # (192, 128) => (batch size, max_len) 
-
-# -
-
-np.save("G:/내 드라이브/2023aifactory/wav_audio/temp_session1_17",pp_audio.cpu().detach().numpy())
-
-torch.cuda.empty_cache()
-gc.collect()
-torch.cuda.memory_reserved()
 
 # ## 2) GRU (time-series)
 
@@ -340,27 +316,28 @@ class GRUModel(nn.Module):
 
         for i in range(x.shape[1]): # 1~seq_len
             input_ = x[:,i,:]
+            mask_ = torch.zeros_like(input_)
+            mask_[~torch.logical_not(input_)] = 1
+            
             if self.bContext==True: # context-level
-                if input_.count_nonzero() > 0: # 정상 utterance vector
+                self.h0 = self.gru_0(input_,self.h0)
+                self.h1 = self.gru_1(self.h0,self.h1)
+                self.h2 = self.gru_2(self.h1,self.h2)
+                self.h2 = self.h2 * mask_ ## skip zero vector
+                outs.append(self.h2.unsqueeze(1))
+            else: # self-context level
+                if gender[i]==0: # speaker gender
                     self.h0 = self.gru_0(input_,self.h0)
                     self.h1 = self.gru_1(self.h0,self.h1)
                     self.h2 = self.gru_2(self.h1,self.h2)
+                    self.h2 = self.h2 * mask_ ## skip zero vector
                     outs.append(self.h2.unsqueeze(1))
-                else: # utterance vector 값 없을 때 (ex. audio in session1)
-                    outs.append(torch.zeros_like(self.h1.unsqueeze(1)))
-            else: # self-context level
-                if input_.count_nonzero() > 0: # 정상 utterance vector
-                    if gender[i]==0: # speaker gender
-                        self.h0 = self.gru_0(input_,self.h0)
-                        self.h1 = self.gru_1(self.h0,self.h1)
-                        self.h2 = self.gru_2(self.h1,self.h2)
-                    else: 
-                        self.h0_F = self.gru_0(input_,self.h0_F)
-                        self.h1_F = self.gru_1(self.h0_F,self.h1_F)
-                        self.h2_F = self.gru_2(self.h1_F,self.h2_F)
+                else: 
+                    self.h0_F = self.gru_0(input_,self.h0_F)
+                    self.h1_F = self.gru_1(self.h0_F,self.h1_F)
+                    self.h2_F = self.gru_2(self.h1_F,self.h2_F)
+                    self.h2_F = self.h2_F * mask_ ## skip zero vector
                     outs.append(self.h2_F.unsqueeze(1))
-                else: # utterance vector 값 없을 때 (ex. audio in session1)
-                    outs.append(torch.zeros_like(self.h1.unsqueeze(1)))
             
         outs = torch.cat(outs, dim = -2).squeeze()
         
@@ -384,15 +361,15 @@ class TimeSeriesModel(nn.Module):
 #             model = model.cuda() # contextual context-level
 #             model_s = model_s.cuda() # speaker's self-context-level
 
-        text_input_c = model(text_input.to('cpu')) # (198,128,64) => (session * script, seq_len, hidden_dim)
-        audio_input_c = model(audio_input.to('cpu')) # (198,128,64) => (session * script, seq_len, hidden_dim)
+        text_input_c = model(text_input.to(device)) # (198,128,64) => (session * script, seq_len, hidden_dim)
+        audio_input_c = model(audio_input.to(device)) # (198,128,64) => (session * script, seq_len, hidden_dim)
         
         text_input_s = torch.zeros_like(text_input_c)
         audio_input_s = torch.zeros_like(audio_input_c)
         
         for i in range(text_input.shape[0]):
-            text_input_s[i,:,:] = model_s(text_input[i,:,:].unsqueeze(dim=0).to('cpu'), gender=gender[i,:].to('cpu'))
-            audio_input_s[i,:,:] = model_s(audio_input[i,:,:].unsqueeze(dim=0).to('cpu'), gender=gender[i,:].to('cpu'))
+            text_input_s[i,:,:] = model_s(text_input[i,:,:].unsqueeze(dim=0).to(device), gender=gender[i,:].to(device))
+            audio_input_s[i,:,:] = model_s(audio_input[i,:,:].unsqueeze(dim=0).to(device), gender=gender[i,:].to(device))
             
         gc.collect()
 
@@ -403,8 +380,10 @@ class TimeSeriesModel(nn.Module):
 
 # ### model로 전체 빌딩 되어야 하는 부분 ### 수정 필요
 
-tsmodel = TimeSeriesModel()
-pp_text, pp_audio = tsmodel(pp_text, pp_audio, tr_gender_tensor)
+# +
+# tsmodel = TimeSeriesModel()
+# pp_text, pp_audio = tsmodel(pp_text, pp_audio, tr_gender_tensor)
+# -
 
 # ## 3) Cross-Attention
 
@@ -413,6 +392,7 @@ pp_text, pp_audio = tsmodel(pp_text, pp_audio, tr_gender_tensor)
 device='cpu'
 
 
+# +
 class MultiHeadAttentionLayer(nn.Module):
 
     def __init__(self, d_embed, h):
@@ -434,32 +414,78 @@ class MultiHeadAttentionLayer(nn.Module):
 
         def transform(x, fc):  # (n_batch, seq_len, d_embed)
             out = fc(x)        # (n_batch, seq_len, d_model)
-            out = out.view(n_batch, -1, self.h, self.d_embed) # (n_batch, seq_len, h, d_k)
-            out = out.transpose(1, 2) # (n_batch, h, seq_len, d_k)
+            out = out.contiguous().view(n_batch, -1, self.h, self.d_embed) # (n_batch, seq_len, h, d_k)
+            out = out.contiguous().transpose(1, 2) # (n_batch, h, seq_len, d_k)
             return out
 
-        def calculate_attention(query, key, value, mask):
+        def calculate_attention(query, key, value, mask, n_xor=0, mask_xor=None):
           # query, key, value: (n_batch, h, seq_len, d_k)
           # mask: (n_batch, 1, seq_len, seq_len)
+            
+            # n_xor==0: query and key have same number of zero
+            # n_xor==1: key have more zero than query -> query win
+            # n_xor==2: query have more zero than key -> key win
+            
+            ### mask_ 추가하기
+            
+            mask = mask.unsqueeze(dim=1).repeat(1,self.h,1,1)
             d_k = key.shape[-1]
-            attention_score = torch.matmul(query, key.transpose(-2, -1)) # Q x K^T, (n_batch, h, seq_len, seq_len)
+            attention_score = torch.matmul(query, key.contiguous().transpose(-2, -1)) # Q x K^T, (n_batch, h, seq_len, seq_len)
             attention_score = attention_score / math.sqrt(d_k)
+            
             if mask is not None:
                 attention_score = attention_score.masked_fill(mask==0, -1e9)
             attention_prob = softmax(attention_score) # (n_batch, h, seq_len, seq_len)
+            
+            if mask is not None:
+                attention_prob = attention_prob.masked_fill(mask==0, 0) # set zero to original zero index
+            
             out = torch.matmul(attention_prob, value) # (n_batch, h, seq_len, d_k)
+            
+#             if n_xor==1:
+#                 print('n_xor=1')
+#                 for i in range(self.h):
+#                     out[:,j,:,:][mask_xor] = query[:,j,:,:][mask_xor].contiguous()
+#             elif n_xor==2:
+#                 print('n_xor=2')
+#                 for i in range(self.h):
+#                     out[:,j,:,:][mask_xor] = key[:,j,:,:][mask_xor].contiguous()
+            
             return out
 
+        temp = torch.ne(torch.sum(torch.ne(query,0),dim=-1),0)
+        mask_q = torch.stack([deepcopy(temp) for i in range(query.shape[-1])],axis=-1)
+        temp = torch.ne(torch.sum(torch.ne(key,0),dim=-1),0)
+        mask_k = torch.stack([deepcopy(temp) for i in range(key.shape[-1])],axis=-1)
+        
+#         mask_k = torch.ne(torch.sum(torch.ne(key,0),dim=-1))
+#         mask_q = torch.zeros_like(query) # recognize zero vector
+#         mask_q[~torch.logical_not(query)] = 1
+#         mask_k = torch.zeros_like(key) # recognize zero vector
+#         mask_k[~torch.logical_not(key)] = 1
+
+        mask_xor = torch.logical_xor(mask_q,mask_k)
+        if(mask_xor.sum()>0):
+            n_q = mask_q.sum()
+            n_k = mask_k.sum()
+            if n_q > n_k: n_xor=1
+            elif n_q < n_k: n_xor=2
+            else: n_xor=0
+        
+        n_xor=0
         query = transform(query.to(device), self.q_fc) # (n_batch, h, seq_len, d_k)
         key = transform(key.to(device), self.k_fc)     # (n_batch, h, seq_len, d_k)
         value = transform(value.to(device), self.v_fc) # (n_batch, h, seq_len, d_k)
 
-        out = calculate_attention(query, key, value, mask) # (n_batch, h, seq_len, d_k)
+        out = calculate_attention(query, key, value, mask, n_xor, mask_xor) # (n_batch, h, seq_len, d_k)
         out = out.transpose(1, 2) # (n_batch, seq_len, h, d_k)
         out = out.contiguous().view(n_batch, -1, self.d_model) # (n_batch, seq_len, d_model)
         out = self.out_fc(out) # (n_batch, seq_len, d_embed)
+        
         return out
 
+
+# -
 
 class PositionWiseFeedForwardLayer(nn.Module):
 
@@ -498,16 +524,16 @@ class EncoderBlock(nn.Module):
         self.position_ff = position_ff
         self.residuals = [ResidualConnectionLayer() for _ in range(2)]
         self.do = nn.Dropout(0.2).to(device)
+        self.layer_norm = nn.LayerNorm(hidden_dim).to(device)
         
     def forward(self, trg, src, src_mask=None):
         
-        layer_norm = nn.LayerNorm(trg.shape[-1]).to(device)
-        out = layer_norm(trg)
-        src = layer_norm(src)
+        out = self.layer_norm(trg)
+        src = self.layer_norm(src)
         out = self.self_attention(query=out, key=src, value=src, mask=src_mask)
-        out = self.residuals[0](layer_norm(self.do(out)))
-        out = self.position_ff(layer_norm(self.do(out)))
-        out = self.residuals[1](layer_norm(self.do(out)))
+        out = self.residuals[0](self.layer_norm(self.do(out)))
+        out = self.position_ff(self.layer_norm(self.do(out)))
+        out = self.residuals[1](self.layer_norm(self.do(out)))
         out = self.do(out)
 
         return out
@@ -535,19 +561,15 @@ class Transformer(nn.Module):
         self.encoder = encoder
   
     def forward(self, query, key, bMask=False):
-        def make_pad_mask(query, key, pad_idx=1):
+        def make_pad_mask(query, key, pad_idx=0):
+            query = query[:,:,0]
+            key = key[:,:,0]
             # query: (n_batch, query_seq_len)
             # key: (n_batch, key_seq_len)
-            query_seq_len, key_seq_len = query.size(1), key.size(1)
 
-            key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
-            key_mask = key_mask.repeat(1, 1, query_seq_len, 1)    # (n_batch, 1, query_seq_len, key_seq_len)
-
-            query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
-            query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
-
-            mask = key_mask & query_mask
-            mask.requires_grad = False
+            mask_q = torch.ne(query,0).unsqueeze(dim=1).repeat(1,query.shape[1],1)
+            mask_k = torch.ne(key,0).unsqueeze(dim=1).repeat(1,query.shape[1],1)
+            mask = (mask_q * mask_k).transpose(1,2).contiguous()
             
             return mask
 
@@ -555,8 +577,8 @@ class Transformer(nn.Module):
             pad_mask = make_pad_mask(trg, src)
             return pad_mask
 
-        # src_mask = make_src_mask(query, key)
-        src_mask = None
+        src_mask = make_src_mask(query, key)
+
         if bMask:
             out = self.encoder(query, key, src_mask)
         else:
@@ -565,10 +587,10 @@ class Transformer(nn.Module):
         return out
 
 
-class Model(nn.Module):
+class CrossModalTransformer(nn.Module):
 
     def __init__(self, d_embed=64, h=8, n_layer=5):
-        super(Model, self).__init__()
+        super(CrossModalTransformer, self).__init__()
     # declare
         self.attention = MultiHeadAttentionLayer(d_embed = 64, h = 8)
         self.positionff = PositionWiseFeedForwardLayer(d_k=64, d_ff=64)
@@ -577,10 +599,9 @@ class Model(nn.Module):
         self.encoder = Encoder(self.encoder_layer,n_layer)
         self.model = Transformer(self.encoder)
 
-    def forward(self, query, key):
-        out = self.model(query, key)
+    def forward(self, query, key, bMask):
+        out = self.model(query, key, bMask)
         return out
-
 
 
 class Attention(nn.Module):
@@ -601,6 +622,23 @@ class Attention(nn.Module):
         key = src.clone().to(device)
         value = src.clone().to(device)
         n_batch = query.size(0)
+        
+        def make_pad_mask(query, key, pad_idx=0):
+            query = query[:,:,0]
+            key = key[:,:,0]
+            # query: (n_batch, query_seq_len)
+            # key: (n_batch, key_seq_len)
+
+            mask_q = torch.ne(query,0).unsqueeze(dim=1).repeat(1,query.shape[1],1)
+            mask_k = torch.ne(key,0).unsqueeze(dim=1).repeat(1,query.shape[1],1)
+            mask = (mask_q * mask_k).transpose(1,2).contiguous()
+            mask.requires_grad = False
+            
+            return mask
+
+        def make_src_mask(trg, src):
+            pad_mask = make_pad_mask(trg, src)
+            return pad_mask
 
         def transform(x, fc):  # (n_batch, seq_len, d_embed)
             out = fc(x)        # (n_batch, seq_len, d_model)
@@ -613,6 +651,8 @@ class Attention(nn.Module):
             if mask is not None:
                 attention_score = attention_score.masked_fill(mask==0, -1e9)
             attention_prob = softmax(attention_score) # (n_batch, seq_len, seq_len)
+            if mask is not None:
+                attention_prob = attention_prob.masked_fill(mask==0, 0) # set zero to original zero index
             out = torch.matmul(attention_prob, value) # (n_batch, seq_len, d_k)
             return out
 
@@ -620,12 +660,14 @@ class Attention(nn.Module):
         key = transform(key, self.k_fc)     # (n_batch, seq_len, d_k)
         value = transform(value, self.v_fc) # (n_batch, seq_len, d_k)
 
-        out = calculate_attention(query, key, value, mask) # (n_batch, seq_len, d_k)
+        src_mask = make_src_mask(query, key)
+        out = calculate_attention(query, key, value, src_mask) # (n_batch, seq_len, d_k)
         out = self.out_fc(out) # (n_batch, seq_len, d_embed)
-
+        
         return out
 
 
+# +
 class last_attention(nn.Module):
     def __init__(self,model,attention,d_embed=64):
         super(last_attention,self).__init__()
@@ -635,15 +677,18 @@ class last_attention(nn.Module):
         self.linear = nn.Linear(d_embed,7).to(device)
         self.relu = nn.ReLU().to(device)
         self.softmax = nn.Softmax(dim=-1).to(device)
+        self.do = nn.Dropout(0.2).to(device)
+        self.layer_norm = nn.LayerNorm(hidden_dim).to(device)
 
-    def forward(self,text, audio):
+    def forward(self, text, audio, bMask=False):
         if len(text.shape) < 3:
             text = text.unsqueeze(0)
             audio = audio.unsqueeze(0)
-        ta = self.model(text, audio)
-        at = self.model(audio, text)
-        total = self.attention(ta+at)
-        total = self.attention( total + text )
+        ta = self.model(text, audio, bMask)
+        at = self.model(audio, text, bMask)
+        total = self.attention(ta+at, bMask)
+        
+#         total = self.attention( self.layer_norm(self.do(total)) + self.layer_norm(self.do(text)), bMask )
 
         # MLP
         total = self.relu(self.linear(total))
@@ -652,24 +697,350 @@ class last_attention(nn.Module):
         return self.softmax(total), vote.squeeze()
 
 
+# -
 
-# ### model로 전체 빌딩 되어야 하는 부분 ### 수정 필요
+# ### 전체 모델링 진행
 
-model = Model()
+# +
+class F1_score(nn.Module):
+    def __init__(self):
+        super(F1_score, self).__init__()
+    
+    def forward(self, pred, real):
+            loss = 0
+            confusion_matrix = torch.zeros(7,7)
+            
+            for i in range(len(pred)):
+                confusion_matrix[real[i],pred[i]] += 1
+            
+            n = torch.nan_to_num( confusion_matrix.sum(axis=1), nan=0.0)
+            n2 = torch.nan_to_num( confusion_matrix.sum(axis=0), nan=0.0)
+#             weight_ = confusion_matrix.sum(axis=1) / confusion_matrix.sum()
+            weight_ = n
+            weight_[weight_ == float("Inf")] = 0
+            weight_ = torch.nan_to_num(weight_, nan=0.0)
+            weight_ = weight_ / weight_.sum() # 출현 갯수만큼 가중치 주기
+            
+            recall_ = torch.diag(confusion_matrix,0) / n
+            precision_ = torch.diag(confusion_matrix,0) / n2
+            
+            # na to zero
+            recall_ = torch.nan_to_num(recall_, nan=0.0)
+            precision_ = torch.nan_to_num(precision_, nan=0.0)
+            
+#             loss = (recall_ * weight_).sum()
+#             loss = (recall_).mean()
+    
+            loss = 2*precision_*recall_ / (precision_ + recall_)
+            loss = torch.nan_to_num(loss,nan=0.0).mean()
+            loss = ( torch.nan_to_num(loss,nan=0.0) * weight_).sum()
+            
+            loss = 1-loss
+            
+            if n2.eq(0).sum() > 5:
+                loss += loss*weight_[int(n2.nonzero())]*100
+            
+            return loss
+
+
+# +
+from imblearn.over_sampling import SMOTE
+from torch.utils.data import Dataset
+
+class CustomDataset(Dataset):
+    def __init__(self, X, y, transform=None, n=5):
+        super(CustomDataset,self).__init__()
+        self.X = X
+        self.y = y
+        self.n = n
+        self.transform = transform
+        
+        # SMOTE 객체 생성
+        self.smote = SMOTE(k_neighbors=self.n, random_state=1234) # k_neighbors+1 == n_neighbors
+        
+        # SMOTE 적용
+        self.X_resampled, self.y_resampled = self.smote.fit_resample(X, y)
+        
+    def __getitem__(self, idx):
+        x = self.X_resampled[idx]
+        y = self.y_resampled[idx]
+        
+        if self.transform:
+            x = self.transform(x)
+        
+        return x, y
+    
+    def __len__(self):
+        return len(self.X_resampled)
+
+
+# -
+
+class BuildModels(nn.Module):
+    def __init__(self, inputprocessing_text, inputprocessing_audio, tsmodel, cmt, attention, last_attention):
+        super(BuildModels, self).__init__()
+        self.ip_text = inputprocessing_text
+        self.ip_audio = inputprocessing_audio
+        self.tsmodel = tsmodel
+        self.cmt = cmt
+        self.attention = attention
+        self.la = la
+        
+    
+    def forward(self, kobert_input_tensor, mfcc_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor, bTest=False):
+        
+        def data_(kobert_input_tensor, mfcc_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor):
+
+            ## kobert -> pp_text
+            pp_text = self.ip_text(kobert_input_tensor.to(device))
+
+            ## mfcc -> pp_audio
+            pp_audio = torch.zeros(len(mfcc_input_list),6,max_len,hidden_dim)
+
+            for i in range(len(mfcc_input_list)):
+                for j in range(6):
+                    for k in range(len(mfcc_input_list[i][j])):
+                        temp = torch.tensor(mfcc_input_list[i][j][k], dtype=torch.float32)
+                        pp_audio[i,j,k,:] = self.ip_audio(temp).T
+                        del temp
+                torch.cuda.empty_cache()
+
+            pp_audio = pp_audio.contiguous().reshape(-1,max_len,hidden_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
+            pp_text = pp_text.contiguous().reshape(-1,max_len,hidden_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
+            tr_gender_tensor = gender_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_emotion_tensor = emotion_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_valence_tensor = valence_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_arousal_tensor = arousal_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+
+            return pp_audio.to(device), pp_text.to(device), tr_gender_tensor.to(device), tr_emotion_tensor.to(device), tr_valence_tensor.to(device), tr_arousal_tensor.to(device)
+        
+        ###############
+        
+        def focal_loss(prob,real_emo,alpha=0.25,gamma=-6):
+            prob = prob.squeeze()
+            s_p = prob[real_emo]
+            f_l = -alpha * torch.pow(1-s_p,gamma) * torch.log(s_p)
+            
+            return f_l
+        
+        def weighted_cross_entropy(prob, real_emo, alpha=1):
+            prob = prob.squeeze()
+            
+            # 1. neutral or not
+            s_p = 0
+            
+            if real_emo==3: s_p = prob[real_emo]
+            else: s_p = 1 - prob[3]
+            
+            loss = -torch.log(s_p)
+            
+            # 2. not neutral, then focal loss
+            
+            if real_emo != 3:
+                s_p = prob[real_emo]
+                loss += -torch.log(s_p)
+                
+            return torch.tensor(loss,dtype=torch.long)
+        
+        ###############
+        loss = 0
+        n_cnt = 0
+        accur = 0
+        f1_score = F1_score()
+        
+        torch.manual_seed(1234)
+        tr_audio, tr_text, tr_gender_tensor, tr_emotion_tensor, tr_valence_tensor, tr_arousal_tensor = data_(kobert_input_tensor, mfcc_input_list,
+                                                                                                        gender_tensor, emotion_tensor,
+                                                                                                        valence_tensor, arousal_tensor)
+        tr_text, tr_audio = self.tsmodel(tr_text, tr_audio, tr_gender_tensor)
+        
+        ### resampling class start
+        
+        if bTest==False:
+            tr_text2 = tr_text.reshape(-1,64).detach().numpy()
+            tr_audio2 = tr_audio.reshape(-1,64).detach().numpy()
+            tr_emotion_tensor2 = tr_emotion_tensor.reshape(-1).detach().numpy()
+
+            print(tr_text2.shape)
+            print(tr_audio2.shape)
+            check_cnt = 0
+            check = [i for i in range(7) if Counter(tr_emotion_tensor2)[i] < 4]
+            if len(check) > 0:
+                check_cnt = sum([Counter(tr_emotion_tensor2)[i] for i in range(7) if Counter(tr_emotion_tensor2)[i] < 4])
+                check = ~np.isin(tr_emotion_tensor2,check)
+
+                tr_text2 = tr_text2[check]
+                tr_audio2 = tr_audio2[check]
+                tr_emotion_tensor2 = tr_emotion_tensor2[check]
+
+            temp_te = CustomDataset(tr_text2, tr_emotion_tensor2, n=3)
+            temp_ae = CustomDataset(tr_audio2, tr_emotion_tensor2, n=3)
+
+            tr_text2 = torch.zeros(len(temp_te),hidden_dim)
+            tr_audio2 = torch.zeros(len(temp_te),hidden_dim)
+            tr_emotion_tensor2 = torch.zeros(len(temp_te))
+
+            for i in range(len(temp_te)):
+                tr_text2[i] = torch.tensor(temp_te[i][0], dtype=torch.long)
+                tr_audio2[i] = torch.tensor(temp_ae[i][0], dtype=torch.long)
+                tr_emotion_tensor2[i] = torch.tensor(temp_te[i][1].astype(np.int32), dtype=torch.int32)
+
+            div_ = len(temp_te)%(max_len)
+            remove_idx = tr_emotion_tensor2.eq(-1).nonzero()
+            
+            if div_ > 0:
+                remove_idx = remove_idx[range(div_)]
+                remove_idx = set(torch.cat(list(set(remove_idx))).tolist())
+                remove_idx = torch.tensor(list(set(range(tr_emotion_tensor2.shape[0])) - remove_idx))
+                tr_text2 = torch.index_select(tr_text2, dim=0, index=remove_idx)
+                tr_audio2 = torch.index_select(tr_audio2, dim=0, index=remove_idx)
+                tr_emotion_tensor2 = torch.index_select(tr_emotion_tensor2, dim=0, index=remove_idx)
+                
+            tr_text = tr_text2.reshape(-1,max_len,hidden_dim)
+            tr_audio = tr_audio2.reshape(-1,max_len,hidden_dim)
+            tr_emotion_tensor = tr_emotion_tensor2.reshape(-1,max_len)
+        
+        ### resampling end
+        
+        prob, vote = self.la(tr_text.to(device),tr_audio.to(device), bMask=True)
+    
+        pred_emo_list = []
+        real_emo_list = []
+        pred_prob_list = []
+        
+        criterion = nn.CrossEntropyLoss()
+        
+        for i in range(prob.shape[0]):
+            idx = (tr_emotion_tensor[i,:] != -1).nonzero() # 실제 감정 레이블 존재하는 행만 추출
+            
+            n_cnt += len(idx)
+            temp_pred = []; temp_real = [];
+            temp_prob = prob[i,idx,:].squeeze()
+            temp_loss = 0
+            for j in idx:
+                loss += criterion(prob[i,j,:].to(device), tr_emotion_tensor[i,j].clone().detach().type(torch.long).to(device))
+                accur += int(vote[i,j]==tr_emotion_tensor[i,j])
+                temp_pred.append(int(vote[i,j].detach().numpy()))
+                temp_real.append(int(tr_emotion_tensor[i,j].detach().numpy()))                
+                pred_emo_list = pred_emo_list + temp_pred
+                real_emo_list = real_emo_list + temp_real
+            
+        pred_tensor = torch.tensor(pred_emo_list,dtype=torch.long)
+        real_tensor = torch.tensor(real_emo_list,dtype=torch.long)
+        
+        print(Counter(pred_emo_list))
+        print(Counter(real_emo_list))
+        
+        loss /= n_cnt
+        accur /= n_cnt
+        print(f"loss: {np.round(loss.detach().numpy(),4)}, accuracy: {round(accur,3)}")
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        return {'loss': loss, 'accur':accur, 'pred_emo':pred_emo_list, 'real_emo':real_emo_list}
+
+
+len( np.array([0,1]) )
+
+# +
+from itertools import chain
+
+def evaluate(model, text_input_tensor, audio_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor, step, jump=32):
+    with torch.no_grad():
+        model.eval()
+        total_loss = 0
+        
+        pred_emo = []
+        real_emo = []
+        
+        for i in range(int(text_input_tensor.shape[0]/step)):
+            n_start = 2*(i); n_end = 2*(i+1)
+            ret = model(text_input_tensor[n_start:n_end,:,:,:], audio_input_list[n_start:n_end], 
+                              gender_tensor[n_start:n_end], emotion_tensor[n_start:n_end],  
+                              valence_tensor[n_start:n_end],  arousal_tensor[n_start:n_end], bTest=True)
+
+            total_loss += ret['loss'].data
+            pred_emo.append(ret['pred_emo'])
+            real_emo.append(ret['real_emo'])
+            
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        total_loss = round( float(total_loss.detach().numpy()), 3)
+        pred_emo = torch.tensor(list(chain(*pred_emo)))
+        real_emo = torch.tensor(list(chain(*real_emo)))
+        
+        accur = (pred_emo==real_emo).sum()/len(pred_emo)
+        accur = round( float(accur.detach().numpy()), 3)
+        
+        return {'loss': total_loss, 'accur': accur}
+
+
+# +
+from torch.utils.data import DataLoader
+import torch.optim as optim
+from tqdm import tqdm
+
+step = int(batch_size/6)
+
+ip_text = inputProcessing(output_dim=hidden_dim)
+ip_audio = inputProcessing(output_dim=1)
+tsmodel = TimeSeriesModel()
+cmt = CrossModalTransformer()
 attention = Attention(d_embed=64)
-la = last_attention(model,attention,d_embed=64)
-output, vote = la(pp_text,pp_audio)
+la = last_attention(cmt,attention,d_embed=64)
+
+build_model = BuildModels(ip_text,ip_audio,tsmodel,cmt,attention,la)
+optimizer = optim.AdamW(list(build_model.parameters()), lr = 1e-3)
+
+# train
+
+prog = tqdm(range(epochs))
+
+for epoc in prog:
+    
+    total_loss = 0
+    build_model.train()
+    
+    prog.set_description(f"Epoch - {epoc+1}")
+    
+    for i in range(int(32/step)):
+        print(i)
+        optimizer.zero_grad()
+        n_start = step*(i); n_end = step*(i+1)
+        ret = build_model(kobert_output[n_start:n_end,:,:,:], mfcc_output[n_start:n_end], gender_tensor[n_start:n_end], 
+                          emotion_tensor[n_start:n_end],  valence_tensor[n_start:n_end],  arousal_tensor[n_start:n_end])
+
+        total_loss += ret['loss'].data
+        ret['loss'].requires_grad_(True)
+        ret['loss'].backward()
+        optimizer.step()
+
+        torch.cuda.empty_cache()
+        gc.collect()
+    
+    print("\n Evaluate Start")
+    eval_ = evaluate(build_model,test_kobert_output, test_mfcc_output, gender_tensor[32:40],
+                    emotion_tensor[32:40], valence_tensor[32:40], arousal_tensor[32:40], step, 32)
+    
+    prog.set_postfix(loss=round(eval_['loss']), acc=eval_['accur'])
+    print("\n Evaluate End\n Train Start\n")
+
+# test
+
+
+# -
+
+os.getcwd()
+
+# +
+import joblib
+# joblib.dump(build_model, "G:\\내 드라이브\\2023aifactory\\model.pkl")
+
+model = joblib.load("G:\\내 드라이브\\2023aifactory\\model.pkl")
+model.state_dict()
+# -
+
+torch.cuda.empty_cache()
 gc.collect()
 
-vote[2,:]
-
-# #### 230403 월요일 to do list
-# 0. audio all input 가져오기
-# 1. all 0 이면 어떻게 처리할지 구성
-# 2. loss ftn 정의 및 모델링 전체 구성
-# 3. softmax 문제 해결
-# 4. physical signal 우째할지
-#
-# 나중에 할것
-# 1. input output 순서 맞는지 체크 -> 덜 중요
-# 2. audio input check -> 덜 중요
