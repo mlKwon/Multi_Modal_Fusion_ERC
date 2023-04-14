@@ -17,16 +17,14 @@
 
 # ## 0) Read all anotation file
 
-# +
 import os
-
+from collections import Counter
 os.chdir("G:/내 드라이브/2023aifactory")
 os.getcwd()
-# -
 
 # ### 0-1) Declare Global variable
 
-epochs = 30
+epochs = 21
 max_len = 128 # maximum number of conversation in each script
 hidden_dim = 64 # number of hidden state
 device = 'cpu'
@@ -42,7 +40,67 @@ from copy import deepcopy
 import torch
 from torch import nn
 import math
-from collections import Counter
+
+def read_eda(num,j,base_="EDA"):
+    temp_dir = os.getcwd() + "\\"+base_+"\\Session"+num
+    try:    temp_dat = pd.read_csv(temp_dir + "\\"+ os.listdir(temp_dir)[j], sep="\t")
+    except: return None
+
+    eda = pd.DataFrame(columns=['val', 'id'])
+
+    all_val = []
+    for i in range(1,len(temp_dat)):
+        temp_str_ = str.split(''.join(temp_dat.iloc[i].tolist()),",")
+        if len(temp_str_)>2: 
+            temp_df = pd.DataFrame({'val':[float(temp_str_[0])],'id':temp_str_[2]})
+        else:
+            temp_df = pd.DataFrame({'val':[float(temp_str_[0])],'id':"n"})
+        eda = pd.concat([eda,temp_df],axis=0)
+
+    eda = eda.reset_index(drop=True)
+    # 변화값
+    eda['val'] = eda.val - pd.concat([pd.Series(0),eda.val.iloc[:-1]]).reset_index(drop=True)
+    ## normalize
+    eda['val'] = (eda.val - np.mean(eda.val))/np.std(eda.val.tolist())
+    ## filtering
+    eda = eda.loc[eda.id!="n"]
+    ## id 마다 mean eda value 지정
+    idx = eda.id.unique().tolist()
+    val_ = []
+    for i in range(len(idx)):
+        sum_ = np.mean(eda.loc[eda.id==idx[i]].val)
+        val_.append(sum_)
+    return pd.DataFrame({'id':idx,'val':val_})
+
+def read_ibi(num,j):
+    temp_dir = os.getcwd() + "\\IBI\\Session"+num
+    try: temp_dat = pd.read_csv(temp_dir + "\\"+ os.listdir(temp_dir)[j], sep="\t")
+    except: return None
+    ibi = pd.DataFrame(columns=['val', 'id'])
+
+    all_val = []
+    for i in range(len(temp_dat)):
+        temp_str_ = str.split(''.join(temp_dat.iloc[i].tolist()),",")
+        if len(temp_str_)>3: 
+            temp_df = pd.DataFrame({'val':[float(temp_str_[1])],'id':temp_str_[3]})
+        else:
+            try: temp_df = pd.DataFrame({'val':[float(temp_str_[1])],'id':"n"})
+            except: continue
+        ibi = pd.concat([ibi,temp_df],axis=0)
+
+    ibi = ibi.reset_index(drop=True)
+
+    ## normalize
+    ibi['val'] = (ibi.val - np.mean(ibi.val))/np.std(ibi.val.tolist())
+    ## filtering
+    ibi = ibi.loc[ibi.id!="n"]
+    ## id 마다 mean eda value 지정
+    idx = ibi.id.unique().tolist()
+    val_ = []
+    for i in range(len(idx)):
+        sum_ = np.mean(ibi.loc[ibi.id==idx[i]].val)
+        val_.append(sum_)
+    return pd.DataFrame({'id':idx,'val':val_})
 
 ### Session01 ~ Session32 : Train set
 ### Session33 ~ Session40 : Test set
@@ -59,13 +117,18 @@ script_ = [0 for i in range(6)]
 id_list = [deepcopy(script_) for i in range(len(dir_list))]
 
 ## all annotation data: list -> torch.tensor
-frame = torch.zeros(40,6,max_len)
+frame = torch.zeros(40,6,max_len) # session / script / conversation
 gender_tensor = deepcopy(frame).to(device)
 emotion_tensor = deepcopy(frame-1).to(device)
 valence_tensor = deepcopy(frame).to(device)
 arousal_tensor = deepcopy(frame).to(device)
 
+eda_tensor = deepcopy(frame).to(device)
+ibi_tensor = deepcopy(frame).to(device)
+temp_tensor = deepcopy(frame).to(device)
+
 for i in range(40):
+    print(f"{i+1} processing...")
 #     dirpath = os.path.join(os.getcwd(),dir_list[i])
     annot = pd.read_csv(os.getcwd() + "/annotation/Sess"+str(i+1).zfill(2)+"_eval.csv")
     id_ = annot.iloc[1:,3].tolist()
@@ -79,10 +142,26 @@ for i in range(40):
     emotion = emotion.tolist()
     valence = [float(i) for i in annot.iloc[1:,5].tolist()]
     arousal = [float(i) for i in annot.iloc[1:,6].tolist()]
+    
 
     for j in range(1,7):
+        print(f"{j}..." ,end=" ")
+        sess_num = str(i+1).zfill(2);
+        eda = pd.concat([read_eda(sess_num,2*(j-1)), read_eda(sess_num,2*(j-1)+1)], axis=0)
+        ibi = pd.concat([read_ibi(sess_num,2*(j-1)), read_ibi(sess_num,2*(j-1)+1)], axis=0)
+        skin_temp = pd.concat([read_eda(sess_num,2*(j-1),'TEMP'), read_eda(sess_num,2*(j-1)+1,"TEMP")], axis=0)
+        # EDA
+        
         j_idx = [id_.index(s) for s in id_ if "script"+str(j).zfill(2) in s]
         id_list[i][j-1] = [id_[s] for s in j_idx]
+        
+        for k in range(len(id_list[i][j-1])):
+            if eda.id.isin([id_list[i][j-1][k]]).sum() > 0:
+                eda_tensor[i,j-1,k] = float(eda.val.loc[eda.id.isin([id_list[i][j-1][k]])])
+            if ibi.id.isin([id_list[i][j-1][k]]).sum() > 0:
+                ibi_tensor[i,j-1,k] = float(ibi.val.loc[ibi.id.isin([id_list[i][j-1][k]])])
+            if skin_temp.id.isin([id_list[i][j-1][k]]).sum() > 0:
+                temp_tensor[i,j-1,k] = float(skin_temp.val.loc[skin_temp.id.isin([id_list[i][j-1][k]])])
         # list -> tensor
         n_ = len([gender[s] for s in j_idx])
         gender_tensor[i,j-1,:n_] = torch.tensor([gender[s] for s in j_idx], dtype=torch.int32)
@@ -91,8 +170,18 @@ for i in range(40):
         arousal_tensor[i,j-1,:n_] = torch.tensor([arousal[s] for s in j_idx], dtype=torch.float32)
 
     del id_, gender, emotion, valence, arousal
-
+    print()
 gc.collect()
+
+# +
+# np.save(os.getcwd()+"\\"+"eda_tensor",eda_tensor.detach().numpy())
+# np.save(os.getcwd()+"\\"+"ibi_tensor",ibi_tensor.detach().numpy())
+# np.save(os.getcwd()+"\\"+"temp_tensor",temp_tensor.detach().numpy())
+
+eda_tensor = torch.tensor(np.load(os.getcwd()+"\\"+"eda_tensor.npy"))
+ibi_tensor = torch.tensor(np.load(os.getcwd()+"\\"+"ibi_tensor.npy"))
+temp_tensor = torch.tensor(np.load(os.getcwd()+"\\"+"temp_tensor.npy"))
+
 # -
 
 # ## 1) Input preprocessing
@@ -100,7 +189,8 @@ gc.collect()
 # ### 1-1) Text input by KoBERT (worked in colab should be loaded.)
 
 # +
-
+import torch
+from torch import nn
 # device = torch.device("cuda")
 print(torch.__version__)
 print(torch.cuda.is_available())
@@ -143,6 +233,14 @@ gc.collect()
 #             gc.collect()
 #     print()
 # -
+
+gc.collect()
+
+# +
+# np.save("G:/내 드라이브/2023aifactory/wav_text/temp_session01", kobert_output.cpu().detach().numpy() )
+# kobert_output = torch.tensor(np.load("G:/내 드라이브/2023aifactory/wav_text/temp_session01.npy"))
+# -
+
 
 # ### 1-2) Audio by MFCC
 
@@ -223,6 +321,12 @@ for i in range(5):
     
 #     gc.collect()
 #     print()
+
+# +
+# import pickle
+
+# with open("wav_audio/temp_session_18_26_list", "wb") as fp:
+#     pickle.dump(mfcc_output[18:26], fp)
 # -
 
 # ### 1-3) set same output shape
@@ -326,7 +430,7 @@ class GRUModel(nn.Module):
                 self.h2 = self.h2 * mask_ ## skip zero vector
                 outs.append(self.h2.unsqueeze(1))
             else: # self-context level
-                if gender[i]==0: # speaker User
+                if gender[i]==0: # speaker gender
                     self.h0 = self.gru_0(input_,self.h0)
                     self.h1 = self.gru_1(self.h0,self.h1)
                     self.h2 = self.gru_2(self.h1,self.h2)
@@ -695,8 +799,6 @@ class last_attention(nn.Module):
 # ### 전체 모델링 진행
 
 # +
-from sklearn.metrics import f1_score
-
 class F1_score(nn.Module):
     def __init__(self):
         super(F1_score, self).__init__()
@@ -711,10 +813,10 @@ class F1_score(nn.Module):
             n = torch.nan_to_num( confusion_matrix.sum(axis=1), nan=0.0)
             n2 = torch.nan_to_num( confusion_matrix.sum(axis=0), nan=0.0)
 #             weight_ = confusion_matrix.sum(axis=1) / confusion_matrix.sum()
-#             weight_ = n
-#             weight_[weight_ == float("Inf")] = 0
-#             weight_ = torch.nan_to_num(weight_, nan=0.0)
-#             weight_ = weight_ / weight_.sum() # 출현 갯수만큼 가중치 주기
+            weight_ = n
+            weight_[weight_ == float("Inf")] = 0
+            weight_ = torch.nan_to_num(weight_, nan=0.0)
+            weight_ = weight_ / weight_.sum() # 출현 갯수만큼 가중치 주기
             
             recall_ = torch.diag(confusion_matrix,0) / n
             precision_ = torch.diag(confusion_matrix,0) / n2
@@ -726,54 +828,19 @@ class F1_score(nn.Module):
 #             loss = (recall_ * weight_).sum()
 #             loss = (recall_).mean()
     
-            f1 = 2*precision_*recall_ / (precision_ + recall_)
-            f1 = torch.nan_to_num(f1,nan=0.0).mean()
-#             loss = ( torch.nan_to_num(loss,nan=0.0) * weight_).sum()
-#             loss = 1-loss
+            loss = 2*precision_*recall_ / (precision_ + recall_)
+            loss = torch.nan_to_num(loss,nan=0.0).mean()
+            loss = ( torch.nan_to_num(loss,nan=0.0) * weight_).sum()
             
-#             if n2.eq(0).sum() > 5:
-#                 loss += loss*weight_[int(n2.nonzero())]*100
+            loss = 1-loss
             
-            return f1
+            if n2.eq(0).sum() > 5:
+                loss += loss*weight_[int(n2.nonzero())]*100
+            
+            return loss
 
-
-# -
-
-torch.tensor([0.6,0.1,0.8,0,0]).mean()
 
 # +
-from imblearn.over_sampling import SMOTE
-from torch.utils.data import Dataset
-
-class CustomDataset(Dataset):
-    def __init__(self, X, y, transform=None, n=5):
-        super(CustomDataset,self).__init__()
-        self.X = X
-        self.y = y
-        self.n = n
-        self.transform = transform
-        
-        # SMOTE 객체 생성
-        self.smote = SMOTE(k_neighbors=self.n, random_state=1234) # k_neighbors+1 == n_neighbors
-        
-        # SMOTE 적용
-        self.X_resampled, self.y_resampled = self.smote.fit_resample(X, y)
-        
-    def __getitem__(self, idx):
-        x = self.X_resampled[idx]
-        y = self.y_resampled[idx]
-        
-        if self.transform:
-            x = self.transform(x)
-        
-        return x, y
-    
-    def __len__(self):
-        return len(self.X_resampled)
-
-
-# -
-
 class BuildModels(nn.Module):
     def __init__(self, inputprocessing_text, inputprocessing_audio, tsmodel, cmt, attention, last_attention):
         super(BuildModels, self).__init__()
@@ -818,8 +885,45 @@ class BuildModels(nn.Module):
             prob = prob.squeeze()
             s_p = prob[real_emo]
             f_l = -alpha * torch.pow(1-s_p,gamma) * torch.log(s_p)
+#             f_l = -alpha * torch.pow(1-s_p,gamma) * torch.log(s_p)
             
             return f_l
+        
+#         def f1_score(pred, real):
+#             loss = 0
+#             confusion_matrix = torch.zeros(7,7)
+            
+#             for i in range(len(pred)):
+#                 confusion_matrix[real[i],pred[i]] += 1
+            
+#             n = torch.nan_to_num( confusion_matrix.sum(axis=1), nan=0.0)
+#             n2 = torch.nan_to_num( confusion_matrix.sum(axis=0), nan=0.0)
+# #             weight_ = confusion_matrix.sum(axis=1) / confusion_matrix.sum()
+#             weight_ = 1/n
+#             weight_[weight_ == float("Inf")] = 0
+#             weight_ = torch.nan_to_num(weight_, nan=0.0)
+#             weight_ = weight_ / weight_.sum() # 출현 갯수만큼 역가중치 주기
+            
+#             recall_ = torch.diag(confusion_matrix,0) / n
+#             precision_ = torch.diag(confusion_matrix,0) / n2
+            
+#             # na to zero
+#             recall_ = torch.nan_to_num(recall_, nan=0.0)
+#             precision_ = torch.nan_to_num(precision_, nan=0.0)
+            
+# #             loss = (recall_ * weight_).sum()
+# #             loss = (recall_).mean()
+    
+#             loss = 2*precision_*recall_ / (precision_ + recall_)
+#             loss = torch.nan_to_num(loss,nan=0.0).mean()
+#             loss = ( torch.nan_to_num(loss,nan=0.0) * weight_).sum()
+            
+#             loss = 1-loss
+            
+#             if n2.eq(0).sum() > 5:
+#                 loss += loss*weight_[int(n2.nonzero())]*100
+            
+#             return loss
         
         def weighted_cross_entropy(prob, real_emo, alpha=1):
             prob = prob.squeeze()
@@ -844,7 +948,7 @@ class BuildModels(nn.Module):
         loss = 0
         n_cnt = 0
         accur = 0
-        f1_score_mine = F1_score()
+        f1_score = F1_score()
         
         torch.manual_seed(1234)
         tr_audio, tr_text, tr_gender_tensor, tr_emotion_tensor, tr_valence_tensor, tr_arousal_tensor = data_(kobert_input_tensor, mfcc_input_list,
@@ -854,7 +958,6 @@ class BuildModels(nn.Module):
         
         ### resampling class start
         
-        bTest=True
         if bTest==False:
             tr_text2 = tr_text.reshape(-1,64).detach().numpy()
             tr_audio2 = tr_audio.reshape(-1,64).detach().numpy()
@@ -895,6 +998,11 @@ class BuildModels(nn.Module):
                 tr_audio2 = torch.index_select(tr_audio2, dim=0, index=remove_idx)
                 tr_emotion_tensor2 = torch.index_select(tr_emotion_tensor2, dim=0, index=remove_idx)
                 
+                
+#                 tr_text2 = torch.cat([tr_text2,tr_text2[range(div_)]], dim=0)
+#                 tr_audio2 = torch.cat([tr_audio2,tr_audio2[range(div_)]], dim=0)
+#                 tr_emotion_tensor2 = torch.cat([tr_emotion_tensor2,tr_emotion_tensor2[range(div_)]], dim=0)
+            
             tr_text = tr_text2.reshape(-1,max_len,hidden_dim)
             tr_audio = tr_audio2.reshape(-1,max_len,hidden_dim)
             tr_emotion_tensor = tr_emotion_tensor2.reshape(-1,max_len)
@@ -908,7 +1016,6 @@ class BuildModels(nn.Module):
         pred_prob_list = []
         
         criterion = nn.CrossEntropyLoss()
-#         criterion = nn.MultiLabelSoftMarginLoss()
         
         for i in range(prob.shape[0]):
             idx = (tr_emotion_tensor[i,:] != -1).nonzero() # 실제 감정 레이블 존재하는 행만 추출
@@ -918,31 +1025,47 @@ class BuildModels(nn.Module):
             temp_prob = prob[i,idx,:].squeeze()
             temp_loss = 0
             for j in idx:
+                ##### 손실함수 수정 필요. 가중치 적용하는 방식으로 직접 구현하기.
                 loss += criterion(prob[i,j,:].to(device), tr_emotion_tensor[i,j].clone().detach().type(torch.long).to(device))
+#                 loss += focal_loss(prob[i,j,:].to(device), torch.tensor(tr_emotion_tensor[i,j],dtype=torch.long).to(device),0.25,0.8)
+#                 loss += weighted_cross_entropy(prob[i,j,:].to(device), torch.tensor(tr_emotion_tensor[i,j],dtype=torch.long).to(device), 1)
                 accur += int(vote[i,j]==tr_emotion_tensor[i,j])
                 temp_pred.append(int(vote[i,j].detach().numpy()))
                 temp_real.append(int(tr_emotion_tensor[i,j].detach().numpy()))                
                 pred_emo_list = pred_emo_list + temp_pred
                 real_emo_list = real_emo_list + temp_real
+#                 print(Counter(temp_real))
             
+#             weight_ = 1 / torch.bincount(torch.tensor(temp_real,dtype=torch.int32))
+#             weight_[weight_ == float("Inf")] = 0
+#             if len(weight_) < 7: 
+#                 tt = [ 0 for i in range(7-len(weight_))]
+#                 weight_ = torch.tensor(weight_.tolist() + tt, dtype=torch.float32)
+                    
+#             weight_ = weight_ / weight_.sum()
+            
+#             criterion = nn.CrossEntropyLoss(weight=weight_).to(device)
+#             loss += criterion(temp_prob, torch.tensor(temp_real, dtype=torch.long))
+#             loss += f1_score(torch.tensor(temp_pred, dtype=torch.long),torch.tensor(temp_real, dtype=torch.long))
+        
         pred_tensor = torch.tensor(pred_emo_list,dtype=torch.long)
         real_tensor = torch.tensor(real_emo_list,dtype=torch.long)
         
         print(Counter(pred_emo_list))
         print(Counter(real_emo_list))
         
+#         loss += f1_score(pred_tensor, real_tensor)
         loss /= n_cnt
         accur /= n_cnt
-        f1_scr = torch.round(f1_score_mine(pred_tensor, real_tensor)*1e3)/1e3
-
-        print(f"loss: {np.round(loss.detach().numpy(),4)}, accuracy: {round(accur,3)}, f1_score: {f1_scr}")
-        print(f1_score(pred_tensor.detach().numpy(),real_tensor.detach().numpy(),average='macro'))
-        
+        print(f"loss: {np.round(loss.detach().numpy(),4)}, accuracy: {round(accur,3)}")
         torch.cuda.empty_cache()
         gc.collect()
         
         return {'loss': loss, 'accur':accur, 'pred_emo':pred_emo_list, 'real_emo':real_emo_list}
+# -
 
+
+len( np.array([0,1]) )
 
 # +
 from itertools import chain
@@ -954,8 +1077,6 @@ def evaluate(model, text_input_tensor, audio_input_list, gender_tensor, emotion_
         
         pred_emo = []
         real_emo = []
-        f1_score_mine = F1_score()
-        
         for i in range(int(text_input_tensor.shape[0]/step)):
             n_start = 2*(i); n_end = 2*(i+1)
             ret = model(text_input_tensor[n_start:n_end,:,:,:], audio_input_list[n_start:n_end], 
@@ -976,25 +1097,7 @@ def evaluate(model, text_input_tensor, audio_input_list, gender_tensor, emotion_
         accur = (pred_emo==real_emo).sum()/len(pred_emo)
         accur = round( float(accur.detach().numpy()), 3)
         
-        f1_scr = f1_score_mine(pred_emo, real_emo)
-        print(f'{torch.round(f1_scr*1e3)/1e3}')
-        
-        confusion_matrix = torch.zeros(7,7)
-
-        for i in range(len(real_emo)):
-            confusion_matrix[pred_emo[i],real_emo[i]] += 1
-            
-        print(confusion_matrix)
-        
-        print('finally')
-        print(f1_score(pred_emo.detach().numpy(),real_emo.detach().numpy(),average='macro'))
-        print(torch.diag(confusion_matrix).sum()/confusion_matrix.sum())
-        n = torch.nan_to_num( confusion_matrix.sum(axis=1), nan=0.0)
-        recall_ = torch.diag(confusion_matrix,0) / n
-        recall_ = torch.nan_to_num(recall_, nan=0.0)
-        print(recall_.mean())
-        print(recall_.sum())
-        
+#         print(f'total_loss: {total_loss}, accuracy: {accur}')
         return {'loss': total_loss, 'accur': accur}
 
 
@@ -1040,55 +1143,280 @@ for epoc in prog:
 
         torch.cuda.empty_cache()
         gc.collect()
-    
-    
-    print("\n Evaluate Start")
+        
     eval_ = evaluate(build_model,test_kobert_output, test_mfcc_output, gender_tensor[32:40],
                     emotion_tensor[32:40], valence_tensor[32:40], arousal_tensor[32:40], step, 32)
     
     prog.set_postfix(loss=round(eval_['loss']), acc=eval_['accur'])
-    print("\n Evaluate End\n Train Start\n")
 
 # test
 
 
 # -
 
-os.getcwd()
-
-# +
-import joblib
-# joblib.dump(build_model, "G:\\내 드라이브\\2023aifactory\\model.pkl")
-# joblib.dump(build_model, "G:\\내 드라이브\\2023aifactory\\model3.pkl")
-
-model = joblib.load("G:\\내 드라이브\\2023aifactory\\model.pkl")
-model.state_dict()
-# -
-
 torch.cuda.empty_cache()
 gc.collect()
 
 
-# +
-model_ = joblib.load("G:\\내 드라이브\\2023aifactory\\model3.pkl")
-eval_ = evaluate(build_model,test_kobert_output, test_mfcc_output, gender_tensor[32:40],
-                emotion_tensor[32:40], valence_tensor[32:40], arousal_tensor[32:40], step, 32)
+# #### 230403 월요일 to do list
+# 0. audio all input 가져오기
+# 1. all 0 이면 어떻게 처리할지 구성
+# 2. loss ftn 정의 및 모델링 전체 구성
+# 3. softmax 문제 해결
+# 4. physical signal 우째할지
+#
+# 나중에 할것
+# 1. input output 순서 맞는지 체크 -> 덜 중요
+# 2. audio input check -> 덜 중요
 
-# prog.set_postfix(loss=round(eval_['loss']), acc=eval_['accur'])
+# #### 230406 목요일 to do list
+# 0. neutral 이외의 값을 얼마나 잘 맞추는지 가중치 줄 필요 있어보임 (W 따로 학습 시키도록? 하는것도 고려해서 가중치 주기.)
+#     -> cross entropy loss ftn 직접 정의해서 구현하는게 좋을듯
+# 1. physical signal 우째할지
+# 2. 전체 모델링
+#
+
+# ## arousal, valence 예측
+
+# +
+class last_attention_ar_va(nn.Module):
+    def __init__(self,model,attention,d_embed=64):
+        super(last_attention_ar_va,self).__init__()
+        self.model=model
+        self.attention = Attention(d_embed=d_embed)
+        self.d_embed = d_embed
+        
+        # define function
+        self.linear = nn.Linear(d_embed,32).to(device)
+        self.linear2 = nn.Linear(32,1).to(device)
+        self.multi_linear = nn.Linear(4,1)
+        self.relu = nn.ReLU().to(device)
+        self.do = nn.Dropout(0.2).to(device)
+        self.layer_norm = nn.LayerNorm(hidden_dim).to(device)
+        self.sigmoid = nn.Softmax()
+
+    def forward(self, text, audio, eda, ibi, skin_temp, bMask=False):
+        if len(text.shape) < 3:
+            text = text.unsqueeze(0)
+            audio = audio.unsqueeze(0)
+        ta = self.model(text, audio, bMask)
+        at = self.model(audio, text, bMask)
+        total = self.attention(ta+at, bMask)
+        
+#         total = self.attention( self.layer_norm(self.do(total)) + self.layer_norm(self.do(text)), bMask )
+
+        # MLP
+        total = self.relu(self.linear(total))
+        total = self.relu(self.linear2(self.do(total)))
+        total = torch.stack([total.squeeze(),eda,ibi,skin_temp], dim=2)
+        total = self.multi_linear(self.do(total))
+
+        return total
+
+
+# +
+# Concordance Correlation Coefficient
+
+def ccc(y_true, y_pred):
+    mean_true = torch.mean(y_true)
+    mean_pred = torch.mean(y_pred)
+    var_true = torch.var(y_true)
+    var_pred = torch.var(y_pred)
+    sd_true = torch.std(y_true)
+    sd_pred = torch.std(y_pred)
+
+    rho = torch.mean((y_true - mean_true) * (y_pred - mean_pred)) / (sd_true * sd_pred)
+    mean_cent_prod = torch.mean(y_true * y_pred) - mean_true * mean_pred
+    return 2 * rho * sd_true * sd_pred / (var_true + var_pred + mean_cent_prod)
+
+
 # -
 
-a = torch.tensor([[1.1360e+03, 0.0000e+00, 0.0000e+00, 8.7310e+03, 5.0000e+01, 0.0000e+00,
-         0.0000e+00],
-        [1.0870e+03, 5.0200e+02, 6.9500e+02, 1.8590e+04, 1.0000e+01, 0.0000e+00,
-         0.0000e+00],
-        [5.2900e+02, 3.4100e+02, 1.8800e+02, 9.6910e+03, 7.0000e+01, 1.1800e+02,
-         0.0000e+00],
-        [6.6760e+03, 7.8300e+02, 1.2000e+02, 4.4911e+04, 1.6000e+01, 9.0000e+01,
-         1.3600e+02],
-        [0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00,
-         0.0000e+00],
-        [0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00,
-         0.0000e+00],
-        [0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00, 0.0000e+00,
-         0.0000e+00]])
-torch.diag(a,0)/a.sum(dim=1)
+class BuildModels_ar_va(nn.Module):
+    def __init__(self, inputprocessing_text, inputprocessing_audio, tsmodel, cmt, attention, last_attention, bValence=False):
+        super(BuildModels_ar_va, self).__init__()
+        self.ip_text = inputprocessing_text
+        self.ip_audio = inputprocessing_audio
+        self.tsmodel = tsmodel
+        self.cmt = cmt
+        self.attention = attention
+        self.la = last_attention
+        self.bVal = bValence
+    
+    def forward(self, kobert_input_tensor, mfcc_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor, 
+                eda_tensor, ibi_tensor, temp_tensor, bTest=False):
+        
+        def data_(kobert_input_tensor, mfcc_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor,
+                  eda_tensor, ibi_tensor, temp_tensor):
+
+            ## kobert -> pp_text
+            pp_text = self.ip_text(kobert_input_tensor.to(device))
+
+            ## mfcc -> pp_audio
+            pp_audio = torch.zeros(len(mfcc_input_list),6,max_len,hidden_dim)
+
+            for i in range(len(mfcc_input_list)):
+                for j in range(6):
+                    for k in range(len(mfcc_input_list[i][j])):
+                        temp = torch.tensor(mfcc_input_list[i][j][k], dtype=torch.float32)
+                        pp_audio[i,j,k,:] = self.ip_audio(temp).T
+                        del temp
+                torch.cuda.empty_cache()
+
+            pp_audio = pp_audio.contiguous().reshape(-1,max_len,hidden_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
+            pp_text = pp_text.contiguous().reshape(-1,max_len,hidden_dim) # (192, 128, 64) => (batch size, max_len, hidden_dim)
+            tr_gender_tensor = gender_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_emotion_tensor = emotion_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_valence_tensor = valence_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_arousal_tensor = arousal_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_eda_tensor = eda_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_ibi_tensor = ibi_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+            tr_temp_tensor = temp_tensor.contiguous().reshape(-1,max_len) # (192, 128) => (batch size, max_len) 
+
+            return pp_audio.to(device), pp_text.to(device), tr_gender_tensor.to(device), tr_emotion_tensor.to(device), tr_valence_tensor.to(device), tr_arousal_tensor.to(device), tr_eda_tensor.to(device), tr_ibi_tensor.to(device), tr_temp_tensor.to(device)
+        
+        def my_loss(output, target,criterion):
+            loss = criterion(output, target)  # 기본적인 MSE 손실
+            loss += 100 * torch.mean(torch.clamp(output - 5, min=0) ** 2)  # 출력값이 5를 넘어서면 큰 패널티 부여
+            loss += 100 * torch.mean(torch.clamp(-output, min=0) ** 2)  # 출력값이 0보다 작으면 큰 패널티 부여
+            return loss
+        
+        ###############
+        loss = 0
+        n_cnt = 0
+        accur = 0
+        
+        torch.manual_seed(1234)
+        tr_audio, tr_text, tr_gender_tensor, tr_emotion_tensor, tr_valence_tensor, tr_arousal_tensor, tr_eda_tensor, tr_ibi_tensor, tr_temp_tensor = data_(kobert_input_tensor, mfcc_input_list,gender_tensor, emotion_tensor,valence_tensor, arousal_tensor, eda_tensor, ibi_tensor, temp_tensor)
+        tr_text, tr_audio = self.tsmodel(tr_text, tr_audio, tr_gender_tensor)
+        
+        pred = self.la(tr_text,tr_audio, tr_eda_tensor, tr_ibi_tensor, tr_temp_tensor, bMask=True)
+    
+        pred_list = []
+        real_list = []
+        eval_fun = ccc
+        criterion = nn.MSELoss()
+        
+        cnt = 0
+        for i in range(pred.shape[0]):
+            idx = (tr_emotion_tensor[i,:] != -1).nonzero() # 실제 감정 레이블 존재하는 행만 추출
+            cnt += 1
+            temp_pred = []
+            temp_real = []
+            
+            for j in idx:
+                temp_pred = temp_pred + pred[i,j].clone().tolist()
+                if self.bVal: temp_real = temp_real + tr_valence_tensor[i,j].clone().tolist()
+                else: temp_real = temp_real + tr_arousal_tensor[i,j].clone().tolist()
+
+            loss += my_loss(torch.tensor(temp_pred).flatten(), torch.tensor(temp_real).flatten(), criterion)
+            penalty = 5 * (torch.clamp(torch.tensor(temp_pred), min=0) ** 2 + torch.clamp(torch.tensor(temp_pred) - 5, max=0) ** 2)
+            loss += penalty.mean()
+#             loss += criterion(torch.tensor(temp_pred).flatten(), torch.tensor(temp_real).flatten())
+            print(eval_fun(torch.tensor(temp_pred).flatten(), torch.tensor(temp_real).flatten()))
+
+            
+            pred_list.append(temp_pred)
+            real_list.append(temp_real)
+        
+        loss /= cnt
+        
+        pred_tensor = torch.tensor(list(chain(*pred_list)))
+        real_tensor = torch.tensor(list(chain(*real_list)))
+        
+        print(f'pred max: {pred_tensor.max()}, min: {pred_tensor.min()}')
+        print(f'real max: {real_tensor.max()}, min: {real_tensor.min()}')
+        
+        print(f"loss: {round(loss.detach().tolist(),4)}")
+        
+        return {'loss': loss, 'pred':pred_list, 'real':real_list}
+
+# +
+from itertools import chain
+
+def evaluate_ar_va(model, text_input_tensor, audio_input_list, gender_tensor, emotion_tensor, valence_tensor, arousal_tensor, 
+                   eda_tensor, ibi_tensor, temp_tensor, step, jump=32):
+    with torch.no_grad():
+        model.eval()
+        total_loss = 0
+        
+        pred = []
+        real = []
+        for i in range(int(text_input_tensor.shape[0]/step)):
+            n_start = step*(i); n_end = step*(i+1)
+            ret = model(text_input_tensor[n_start:n_end,:,:,:], audio_input_list[n_start:n_end], 
+                              gender_tensor[n_start:n_end], emotion_tensor[n_start:n_end],  
+                              valence_tensor[n_start:n_end],  arousal_tensor[n_start:n_end], 
+                              eda_tensor[n_start:n_end],  ibi_tensor[n_start:n_end], 
+                              temp_tensor[n_start:n_end], bTest=True)
+
+            total_loss += ret['loss'].data
+            pred = pred + ret['pred']
+            real = real + ret['real']
+            
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        total_loss = round( float(total_loss.detach().numpy()), 3)
+        pred = torch.tensor(list(chain(*pred)))
+        real = torch.tensor(list(chain(*real)))
+        
+        return {'loss': total_loss,'pred':pred, 'real':real}
+
+
+# +
+from torch.utils.data import DataLoader
+import torch.optim as optim
+from tqdm import tqdm
+
+step = int(batch_size/6)
+
+ip_text = inputProcessing(output_dim=hidden_dim)
+ip_audio = inputProcessing(output_dim=1)
+tsmodel = TimeSeriesModel()
+cmt = CrossModalTransformer()
+attention = Attention(d_embed=64)
+la = last_attention_ar_va(cmt,attention,d_embed=64)
+
+build_model = BuildModels_ar_va(ip_text,ip_audio,tsmodel,cmt,attention,la)
+optimizer = optim.AdamW(list(build_model.parameters()), lr = 1e-5)
+
+# train
+
+prog = tqdm(range(epochs))
+
+for epoc in prog:
+    
+    total_loss = 0
+    build_model.train()
+    
+    prog.set_description(f"Epoch - {epoc+1}")
+    
+    for i in range(int(32/step)):
+        print(i)
+        optimizer.zero_grad()
+        n_start = step*(i); n_end = step*(i+1)
+        ret = build_model(kobert_output[n_start:n_end,:,:,:], mfcc_output[n_start:n_end], gender_tensor[n_start:n_end], 
+                          emotion_tensor[n_start:n_end],  valence_tensor[n_start:n_end],  arousal_tensor[n_start:n_end],
+                          eda_tensor[n_start:n_end],  ibi_tensor[n_start:n_end],  temp_tensor[n_start:n_end])
+
+        total_loss += ret['loss'].data
+        ret['loss'].requires_grad_(True)
+        ret['loss'].backward()
+        optimizer.step()
+
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        print(list(build_model.parameters()))
+        
+    print("\n Evaluate Start")
+    eval_ = evaluate_ar_va(build_model,test_kobert_output, test_mfcc_output, gender_tensor[32:40],
+                    emotion_tensor[32:40], valence_tensor[32:40], arousal_tensor[32:40], 
+                    eda_tensor[32:40], ibi_tensor[32:40], temp_tensor[32:40], 
+                           step, 32)
+    
+    prog.set_postfix(loss=round(eval_['loss']))
+    print("\n Evaluate End\n Train Start\n")
+
+# test
